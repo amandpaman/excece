@@ -1,126 +1,82 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from st_aggrid import GridOptionsBuilder, AgGrid, JsCode
 import plotly.express as px
-from fpdf import FPDF
+import mermaid as mmd  # For flowcharts (custom component)
+from io import BytesIO
 
-# Title
-st.set_page_config(page_title="Complex Excel Dashboard", layout="wide")
-st.title("📊 Complex Excel Data Viewer & Dashboard")
+# 1. Data Parser
+def parse_excel(uploaded_file):
+    df = pd.read_excel(uploaded_file, header=[2])  # Skip 2 header rows
+    sections = {
+        "Order Info": df.columns[:7].tolist(),
+        "Commercial Info": df.columns[7:17].tolist(),
+        "Last Mile Info": df.columns[17:32].tolist(),
+        "Posting Info": df.columns[32:40].tolist(),
+        "Order Aging": df.columns[40:50].tolist(),
+        "Delivery Info": df.columns[50:].tolist()
+    }
+    return df, sections
 
-# Upload Excel file
-uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+# 2. Generate Mermaid Flowchart
+def generate_flowchart(sections):
+    chart = """
+    graph TD
+    """
+    for section, cols in sections.items():
+        chart += f"    {section.replace(' ', '_')}[{section}]\n"
+        for col in cols[:3]:  # Show first 3 cols per section
+            chart += f"    {section.replace(' ', '_')} --> {col.replace(' ', '_')}\n"
+    return chart
 
+# 3. Streamlit App
+st.set_page_config(layout="wide")
+st.title("📊 Telecom Data Visualizer")
+
+# --- Upload & Parse ---
+uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 if uploaded_file:
-    # Get all sheet names
-    xl = pd.ExcelFile(uploaded_file)
-    sheet_name = st.selectbox("Select Sheet", xl.sheet_names)
-
-    # Read selected sheet
-    df = xl.parse(sheet_name, header=[0, 1] if st.checkbox("Enable Sub-columns (MultiIndex)", value=True) else 0)
-
-    st.markdown("### Data Preview")
-    st.dataframe(df, use_container_width=True)
-
-    # Optional column filters
-    st.sidebar.header("🔍 Filter Data")
-    column_to_filter = st.sidebar.selectbox("Select Column to Filter", df.columns, index=0)
-    if pd.api.types.is_numeric_dtype(df[column_to_filter]):
-        min_val, max_val = st.sidebar.slider("Value Range", float(df[column_to_filter].min()), float(df[column_to_filter].max()),
-                                             (float(df[column_to_filter].min()), float(df[column_to_filter].max())))
-        filtered_df = df[(df[column_to_filter] >= min_val) & (df[column_to_filter] <= max_val)]
-    else:
-        filter_val = st.sidebar.text_input("Enter Filter Keyword")
-        filtered_df = df[df[column_to_filter].astype(str).str.contains(filter_val, case=False, na=False)]
-
-    st.markdown("### 🔎 Filtered Data")
-    st.dataframe(filtered_df, use_container_width=True)
-
-    # Pivot Table Section
-    st.markdown("---")
-    st.subheader("📌 Create Pivot Table")
-    with st.expander("Generate Pivot Table"):
-        pivot_index = st.multiselect("Rows", options=filtered_df.columns)
-        pivot_columns = st.multiselect("Columns", options=filtered_df.columns)
-        pivot_values = st.multiselect("Values", options=filtered_df.columns)
-        aggfunc = st.selectbox("Aggregation Function", ["sum", "mean", "count", "min", "max"], index=0)
-
-        if st.button("Generate Pivot Table"):
-            try:
-                pivot_table = pd.pivot_table(
-                    filtered_df,
-                    index=pivot_index,
-                    columns=pivot_columns,
-                    values=pivot_values,
-                    aggfunc=aggfunc
-                )
-                st.dataframe(pivot_table)
-            except Exception as e:
-                st.error(f"❌ Error generating pivot table: {e}")
-
-    # Export Section
-    st.markdown("---")
-    st.subheader("⬇️ Export Data")
-
-    # Excel Export
-    excel_buf = BytesIO()
-    export_df = filtered_df.copy()
-
-    if isinstance(export_df.columns, pd.MultiIndex):
-        export_df.columns = [' - '.join([str(i) for i in col if str(i).strip()]) for col in export_df.columns]
-
-    export_df.to_excel(excel_buf, index=False)
-    excel_buf.seek(0)
-
-    st.download_button(
-        label="📤 Download Filtered Data as Excel",
-        data=excel_buf,
-        file_name="filtered_data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    # PDF Export
-    if st.button("📄 Generate PDF Report"):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=10)
-
-        pdf.cell(200, 10, txt="Filtered Data Summary Report", ln=True, align='C')
-        pdf.ln(10)
-
-        # Limit rows in PDF to 30
-        for i, row in export_df.head(30).iterrows():
-            line = ", ".join([f"{col}: {row[col]}" for col in export_df.columns])
-            pdf.multi_cell(0, 8, line)
-
-        pdf_output = BytesIO()
-        pdf.output(pdf_output)
-        pdf_output.seek(0)
-
-        st.download_button(
-            label="📥 Download PDF Report",
-            data=pdf_output,
-            file_name="summary_report.pdf",
-            mime="application/pdf"
-        )
-
-    # Visualization Section
-    st.markdown("---")
-    st.subheader("📊 Data Visualization")
-    with st.expander("📈 Create Chart"):
-        numeric_cols = [col for col in export_df.columns if pd.api.types.is_numeric_dtype(export_df[col])]
-        all_cols = export_df.columns.tolist()
-
-        x_axis = st.selectbox("X-axis", options=all_cols)
-        y_axis = st.selectbox("Y-axis", options=numeric_cols)
-        chart_type = st.selectbox("Chart Type", ["Bar", "Line", "Scatter"])
-
-        if chart_type == "Bar":
-            fig = px.bar(export_df, x=x_axis, y=y_axis)
-        elif chart_type == "Line":
-            fig = px.line(export_df, x=x_axis, y=y_axis)
-        else:
-            fig = px.scatter(export_df, x=x_axis, y=y_axis)
-
+    df, sections = parse_excel(uploaded_file)
+    
+    # --- Tabs ---
+    tab1, tab2, tab3 = st.tabs(["Hierarchy", "Charts", "Data Table"])
+    
+    with tab1:
+        st.subheader("Data Structure Flowchart")
+        flowchart = generate_flowchart(sections)
+        st.graphviz_chart(flowchart)
+        
+        # Alternative: Use Mermaid (requires custom component)
+        # mmd.mermaid(flowchart, key="flowchart")
+    
+    with tab2:
+        st.subheader("CAPEX Analysis")
+        capex_cols = [col for col in df.columns if "CAPEX" in col]
+        capex_data = df[capex_cols].sum().reset_index()
+        capex_data.columns = ["Category", "Total"]
+        
+        fig = px.bar(capex_data, x="Category", y="Total", title="CAPEX Breakdown")
         st.plotly_chart(fig, use_container_width=True)
+        
+        st.subheader("Aging Status")
+        fig2 = px.pie(df, names="RAG STATUS", title="Project Status")
+        st.plotly_chart(fig2, use_container_width=True)
+    
+    with tab3:
+        st.subheader("Interactive Data Table")
+        st.dataframe(df, use_container_width=True)
+        
+        # Filter
+        selected_circle = st.selectbox("Filter by Circle:", df["A END CIRCLE"].unique())
+        filtered_df = df[df["A END CIRCLE"] == selected_circle]
+        st.write(f"Showing {len(filtered_df)} records for {selected_circle}")
+
+    # --- Export ---
+    st.sidebar.download_button(
+        label="📥 Download Processed Data",
+        data=df.to_csv(index=False).encode(),
+        file_name="processed_telecom_data.csv"
+    )
+else:
+    st.info("Upload an Excel file to begin analysis")
+
+# 4. Run with: streamlit run app.py
