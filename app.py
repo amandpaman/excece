@@ -1,120 +1,121 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from io import BytesIO
-from fpdf import FPDF
-import tempfile
+import io
+from pandas.io.formats.style import Styler
+from openpyxl import load_workbook
 
-# --- App Config ---
-st.set_page_config(page_title="Excel Analyzer", layout="wide")
-st.title("📊 Complex Excel Data Analyzer")
+st.set_page_config(layout="wide")
+st.title("📊 Advanced Excel Dashboard Viewer")
 
-# --- Upload Excel ---
-uploaded_file = st.file_uploader("Upload an Excel file", type=["xlsx", "xls"])
-if not uploaded_file:
-    st.warning("Please upload an Excel file to continue.")
-    st.stop()
+# --- File Upload ---
+file = st.file_uploader("Upload Excel File", type=[".xlsx"])
 
-excel = pd.ExcelFile(uploaded_file)
-sheet_name = st.selectbox("Select sheet", excel.sheet_names)
+if file:
+    xls = pd.ExcelFile(file)
+    sheet_name = st.selectbox("Select Sheet", xls.sheet_names)
 
-# --- Multi-level Header Read ---
-try:
-    df = pd.read_excel(excel, sheet_name=sheet_name, header=[0, 1, 2])
-except:
-    df = pd.read_excel(excel, sheet_name=sheet_name, header=[0, 1])
+    # --- Read with MultiIndex headers (3 levels max assumed) ---
+    df = pd.read_excel(file, sheet_name=sheet_name, header=[0, 1, 2])
 
-st.subheader("🔎 Data Preview")
-st.dataframe(df.head(), use_container_width=True)
+    # --- Prepare column selectors ---
+    all_columns = df.columns.to_list()
+    main_headers = sorted(set(col[0] for col in all_columns if not pd.isna(col[0])))
 
-# --- Section & Sub-Column Filters ---
-st.sidebar.header("📂 Column Filters")
-unique_sections = sorted(set(col[0] for col in df.columns))
-selected_sections = st.sidebar.multiselect("Choose Sections", unique_sections, default=unique_sections)
+    selected_main = st.multiselect("Select Column Sections", main_headers)
 
-filtered_cols = [col for col in df.columns if col[0] in selected_sections]
-df_filtered = df[filtered_cols]
+    selected_sub = []
+    if selected_main:
+        sub_headers = [col for col in all_columns if col[0] in selected_main]
+        search_query = st.text_input("Search Sub-Columns (Optional)")
+        filtered_sub_headers = [col for col in sub_headers if search_query.lower() in str(col).lower()]
+        selected_sub = st.multiselect("Select Sub-Columns", filtered_sub_headers, default=filtered_sub_headers)
 
-# Sub-column search
-search = st.sidebar.text_input("🔍 Search sub-columns")
-if search:
-    filtered_cols = [col for col in filtered_cols if search.lower() in col[1].lower()]
-    df_filtered = df[filtered_cols]
-
-st.subheader("📄 Filtered Data")
-st.dataframe(df_filtered, use_container_width=True)
-
-# --- Excel Download ---
-buffer = BytesIO()
-df_filtered.to_excel(buffer, index=False)
-st.download_button("📥 Download Filtered Excel", buffer.getvalue(), file_name="filtered_data.xlsx")
-
-# --- Auto Chart ---
-st.subheader("📈 Auto Chart Generator")
-if not df_filtered.empty:
-    chart_col = st.selectbox("Select column for chart", df_filtered.columns)
-    chart_type = st.radio("Chart type", ["Bar", "Pie", "Line"])
-
-    if chart_type == "Bar":
-        chart_df = df_filtered[chart_col].value_counts().reset_index()
-        fig = px.bar(chart_df, x='index', y=chart_col[2], title=f"Bar Chart of {chart_col[1]}")
-    elif chart_type == "Pie":
-        chart_df = df_filtered[chart_col].value_counts().reset_index()
-        fig = px.pie(chart_df, names='index', values=chart_col[2], title=f"Pie Chart of {chart_col[1]}")
+    if selected_sub:
+        filtered_df = df[selected_sub]
+    elif selected_main:
+        filtered_df = df[[col for col in all_columns if col[0] in selected_main]]
     else:
-        try:
-            fig = px.line(df_filtered, y=chart_col, title=f"Trend of {chart_col[1]}")
-        except Exception:
-            st.warning("Line chart failed. Try selecting a numeric column.")
+        filtered_df = df.copy()
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Filtered Data Preview")
+    st.dataframe(filtered_df, use_container_width=True)
 
-# --- Pivot Table Generator ---
-st.subheader("🧮 Pivot Table Generator")
-pivot_col1 = st.selectbox("Row (Index)", df_filtered.columns, key="pivot_row")
-pivot_col2 = st.selectbox("Column (Optional)", [None] + list(df_filtered.columns), key="pivot_col")
-pivot_val = st.selectbox("Values", df_filtered.columns, key="pivot_val")
-agg_func = st.selectbox("Aggregation", ["sum", "mean", "count"], key="agg_func")
+    # --- Download as CSV or Excel ---
+    st.markdown("### 📥 Download Options")
+    with st.expander("Download Filtered Data"):
+        col1, col2 = st.columns(2)
 
-try:
-    pivot_df = pd.pivot_table(
-        df_filtered,
-        index=[pivot_col1],
-        columns=[pivot_col2] if pivot_col2 else None,
-        values=pivot_val,
-        aggfunc=agg_func
-    )
-    st.dataframe(pivot_df, use_container_width=True)
-except Exception as e:
-    st.error(f"Pivot Error: {e}")
+        with col1:
+            csv = filtered_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download CSV", csv, "filtered_data.csv", "text/csv")
 
-# --- PDF Summary Generator ---
-st.subheader("📄 Generate Summary Report (PDF)")
+        with col2:
+            excel_buf = io.BytesIO()
+            filtered_df.to_excel(excel_buf, index=False)
+            st.download_button("Download Excel", excel_buf.getvalue(), "filtered_data.xlsx")
 
-if st.button("📤 Export Summary as PDF"):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt="Excel Data Summary Report", ln=True, align='C')
+    # --- Pivot Table Generator ---
+    st.subheader("📈 Pivot Table Generator")
+    with st.expander("Create Pivot Table"):
+        col_pivot1, col_pivot2 = st.columns(2)
+        with col_pivot1:
+            pivot_index = st.multiselect("Rows", options=filtered_df.columns.to_list())
+        with col_pivot2:
+            pivot_columns = st.multiselect("Columns", options=filtered_df.columns.to_list())
 
-        pdf.ln(10)
-        pdf.cell(200, 10, txt=f"Sheet: {sheet_name}", ln=True)
+        pivot_values = st.multiselect("Values", options=filtered_df.columns.to_list())
+        aggfunc = st.selectbox("Aggregation Function", ["sum", "mean", "count", "max", "min"])
 
-        # Add column stats
-        pdf.ln(5)
-        for col in df_filtered.columns[:10]:  # Limit to 10 columns for summary
+        if pivot_values:
             try:
-                if pd.api.types.is_numeric_dtype(df_filtered[col]):
-                    stats = df_filtered[col].describe()
-                    pdf.multi_cell(0, 10, f"{col}:\nMean={stats['mean']:.2f}, Min={stats['min']}, Max={stats['max']}")
-                    pdf.ln(1)
-            except Exception:
-                continue
+                pivot_table = pd.pivot_table(
+                    filtered_df,
+                    index=pivot_index,
+                    columns=pivot_columns,
+                    values=pivot_values,
+                    aggfunc=aggfunc
+                )
+                st.dataframe(pivot_table, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Pivot creation error: {e}")
 
-        pdf.output(tmpfile.name)
-        with open(tmpfile.name, "rb") as f:
-            st.download_button("📥 Download PDF Summary", f.read(), file_name="summary_report.pdf")
+    # --- Auto Chart Generator ---
+    st.subheader("📊 Auto Chart Generator")
+    with st.expander("Generate Charts"):
+        chart_col = st.selectbox("Column for Chart (Numeric Only)", [col for col in filtered_df.columns if pd.api.types.is_numeric_dtype(filtered_df[col])])
 
-# --- Footer ---
-st.caption("Made with ❤️ using Streamlit | Advanced Analyzer Dashboard")
+        chart_type = st.radio("Chart Type", ["Bar", "Pie", "Line", "Area"])
+
+        chart_data = filtered_df[chart_col].value_counts().reset_index()
+        chart_data.columns = ['Category', 'Value']
+
+        if chart_type == "Bar":
+            fig = px.bar(chart_data, x='Category', y='Value', title=f"Bar Chart of {chart_col}")
+        elif chart_type == "Pie":
+            fig = px.pie(chart_data, names='Category', values='Value', title=f"Pie Chart of {chart_col}")
+        elif chart_type == "Line":
+            fig = px.line(chart_data, x='Category', y='Value', title=f"Line Chart of {chart_col}")
+        else:
+            fig = px.area(chart_data, x='Category', y='Value', title=f"Area Chart of {chart_col}")
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- PDF Export ---
+    st.subheader("📄 Export Summary Report")
+    with st.expander("Generate PDF Summary"):
+        try:
+            import pdfkit
+            from jinja2 import Template
+
+            summary_html = f"""
+            <h2>Excel Summary Report</h2>
+            <p><b>Selected Columns:</b> {', '.join([str(c) for c in selected_sub])}</p>
+            <p><b>Shape:</b> {filtered_df.shape}</p>
+            <h3>Head</h3>
+            {filtered_df.head().to_html(index=False)}
+            """
+            pdf = pdfkit.from_string(summary_html, False)
+            st.download_button("Download PDF Report", pdf, file_name="summary_report.pdf")
+        except Exception as e:
+            st.error("PDF generation failed. Ensure `pdfkit` and `wkhtmltopdf` are installed.")
